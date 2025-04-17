@@ -6,7 +6,6 @@ import re
 import pandas as pd
 import json
 
-# 페이지 설정
 st.set_page_config(
     page_title="사람인 채용 정보 크롤러",
     page_icon="🔍",
@@ -14,7 +13,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# JSON 파일 로드 함수
 @st.cache_data
 def load_json_data():
     file_path = 'data/'
@@ -24,7 +22,6 @@ def load_json_data():
         SUFFIX = json.load(f)
     return PREFIX, SUFFIX
 
-# 지역별 요청 파라미터 파싱 함수
 @st.cache_data
 def parse_data(PREFIX, SUFFIX):
     req_parameter = {
@@ -32,42 +29,83 @@ def parse_data(PREFIX, SUFFIX):
         for region, districts in SUFFIX.items()
         for district, suffix in districts.items()
     }
-    for region, districts in SUFFIX.items():
-        if '전체' in districts:
-            req_parameter[region] = PREFIX[region] + districts['전체'][-3:]
-
-    req_parameter2 = {
-        '지역별': 'domestic',
-        '직업별': 'job-category',
-        '역세권별': 'subway',
-        'HOT100': 'hot100',
-        '헤드헌팅': 'headhunting'
+    region_subregion_map = {
+        region: list(districts.keys())
+        for region, districts in SUFFIX.items()
     }
-    return req_parameter, req_parameter2
+    return req_parameter, region_subregion_map
 
 def parse_location_input(user_input):
-
-    # 3. 지역명을 코드로 변환
     region_codes = []
     for region in user_input:
         code = req_parameter.get(region)
         if code:
             region_codes.append(code)
         else:
-            print(f"경고: '{region}' 지역을 찾을 수 없습니다.")
-
+            st.warning(f"경고: '{region}' 지역을 찾을 수 없습니다.")
     return "%2C".join(region_codes)
 
-# 채용 정보 크롤링 함수
-def crawl_jobs(region_type, page_index, region_code):
-    results = []
-    if region_code == None:
-        loc_cd_param = 101000
+def split_info(text):
+    if not isinstance(text, str):
+        return pd.Series([None, None])
+    parts = re.split(r'\s*·\s*', text)
+    if len(parts) >= 2:
+        exp = ' · '.join(parts[:-1]).strip()
+        job_type = re.sub(r'\s*외$', '', parts[-1].strip())
+        return pd.Series([exp, job_type])
     else:
-        loc_cd_param = parse_location_input(region_code)
-    for page in range(1, page_index):
+        return pd.Series([text.strip(), None])
+
+def normalize_experience(exp):
+    if not isinstance(exp, str):
+        return None
+    exp = exp.strip()
+    if '신입' in exp and '경력' in exp:
+        return '신입/경력'
+    elif '신입' in exp:
+        return '신입'
+    elif '경력무관' in exp or '년수무관' in exp:
+        return '경력무관'
+    elif re.match(r'경력 \d+년↑', exp):
+        years = re.findall(r'\d+', exp)[0]
+        return f'{years}년 이상'
+    elif re.match(r'경력 \d+년↓', exp):
+        years = re.findall(r'\d+', exp)[0]
+        return f'{years}년 이하'
+    elif re.match(r'\d+ ~ \d+년', exp):
+        return exp.replace(' ', '')
+    elif exp == '경력':
+        return '경력'
+    else:
+        return exp
+
+def normalize_education(education):
+    if not isinstance(education, str):
+        return None
+    education = education.strip()
+    if '↑' in education:
+        education = education.replace('↑', '')
+    return education
+
+def process_registration_date(text):
+    if not isinstance(text, str):
+        return None
+    text = re.sub(r'\s*(수정|등록)\s*', '', text)
+    text = re.sub(r'\d+\s*시간\s*전', '당일', text)
+    text = re.sub(r'\d+\s*분\s*전', '당일', text)
+    return text.strip()
+
+def extract_job_sectors(item):
+    sector_tags = item.select(".job_sector span")
+    sectors = [tag.text.strip() for tag in sector_tags if "외" not in tag.text]
+    return sectors
+
+def crawl_jobs(page_index, region_code):
+    results = []
+    loc_cd_param = parse_location_input(region_code)
+    for page in range(1, page_index + 1):
         url = (
-            f"https://www.saramin.co.kr/zf_user/jobs/list/{region_type}"
+            f"https://www.saramin.co.kr/zf_user/jobs/list/domestic"
             f"?page={page}&loc_cd={loc_cd_param}&search_done=y&preview=y"
         )
         headers = {'user-agent': 'Mozilla/5.0'}
@@ -93,10 +131,7 @@ def crawl_jobs(region_type, page_index, region_code):
                 '회사링크': extract_href("div.col.company_nm a.str_tit"),
                 '제목': extract_text("div.job_tit span"),
                 '회사': extract_text("div.col.company_nm .str_tit"),
-                '직무': ' / '.join(
-                    span.get_text(strip=True)
-                    for span in item.select(".job_sector span")
-                ) or 'Null',
+                '직무': extract_job_sectors(item),
                 '지역': extract_text(".recruit_info .work_place").rstrip(' 외'),
                 '요구경력': extract_text(".recruit_info .career"),
                 '최소학력': extract_text(".recruit_info .education"),
@@ -105,116 +140,120 @@ def crawl_jobs(region_type, page_index, region_code):
                 '배지': extract_text(".job_badge span"),
             })
 
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    print(df['직무'])
+    if not df.empty:
+        df[['요구경력_raw', '계약종류']] = df['요구경력'].apply(split_info)
+        df['요구경력'] = df['요구경력_raw'].apply(normalize_experience)
+        df['최소학력'] = df['최소학력'].apply(normalize_education)
+        df['등록일자'] = df['등록일자'].apply(process_registration_date)
+        df.drop(columns=['요구경력_raw'], inplace=True)
+        df.dropna(axis=0, inplace=True)
+        # df['직무'] = df['직무'].apply(lambda x: [job.strip() for job in x.split('/')])
+    return df
 
-def split_info(text):
-    if not isinstance(text, str):
-        return pd.Series([None, None])
-    
-    parts = re.split(r'\s*·\s*', text)
+# ✅ 경력 필터링 함수
+def filter_by_experience(df, exp_input):
+    def parse_year_range(exp_text):
+        if '신입' in exp_text or '경력무관' in exp_text:
+            return 0, 0
+        elif '년 이상' in exp_text:
+            year = int(re.findall(r'\d+', exp_text)[0])
+            return year, float('inf')
+        elif '년 이하' in exp_text:
+            year = int(re.findall(r'\d+', exp_text)[0])
+            return 0, year
+        elif re.match(r'\d+~\d+년', exp_text):
+            nums = list(map(int, re.findall(r'\d+', exp_text)))
+            return nums[0], nums[1]
+        return None, None
 
-    if len(parts) >= 2:
-        exp = ' · '.join(parts[:-1]).strip()
-        job_type = re.sub(r'\s*외$', '', parts[-1].strip())
-        return pd.Series([exp, job_type])
-    else:
-        return pd.Series([text.strip(), None])
-    
-def normalize_experience(exp):
-    if not isinstance(exp, str):
-        return None  # 또는 '기타', '불명' 등
+    if exp_input == '신입':
+        return df[df['요구경력'].isin(['신입', '경력무관', '신입/경력'])]
 
-    exp = exp.strip()
-    if '신입' in exp and '경력' in exp:
-        return '신입/경력'
-    elif '신입' in exp:
-        return '신입'
-    elif '경력무관' in exp or '년수무관' in exp:
-        return '경력무관'
-    elif re.match(r'경력 \d+년↑', exp):
-        years = re.findall(r'\d+', exp)[0]
-        return f'{years}년 이상'
-    elif re.match(r'경력 \d+년↓', exp):
-        years = re.findall(r'\d+', exp)[0]
-        return f'{years}년 이하'
-    elif re.match(r'\d+ ~ \d+년', exp):
-        return exp.replace(' ', '')
-    elif exp == '경력':
-        return '경력'
-    else:
-        return exp
-    
-def process_registration_date(text):
-    if not isinstance(text, str):
-        return None
-    
-    # '수정'과 '등록' 제거
-    text = re.sub(r'\s*(수정|등록)\s*', '', text)
-    
-    # 'n시간 전'을 '당일'로 변경
-    text = re.sub(r'\d+\s*시간\s*전', '당일', text)
-    
-    # 'n분 전'은 그대로 두기
-    text = re.sub(r'\d+\s*분\s*전', '당일', text)
-    
-    return text.strip()
+    try:
+        exp_val = int(exp_input)
+    except ValueError:
+        return df
 
-# 메인 앱
+    filtered_rows = []
+    for _, row in df.iterrows():
+        exp = row['요구경력']
+        min_exp, max_exp = parse_year_range(exp)
+        if min_exp is None:
+            continue
+        if min_exp <= exp_val <= max_exp:
+            filtered_rows.append(row)
+
+    return pd.DataFrame(filtered_rows)
 
 def main():
     st.title(":mag: 사람인 채용 정보 크롤러")
-    st.markdown("""
-        사람인 사이트에서 원하는 지역의 채용 정보를 크롤링합니다.  
-        왼쪽 사이드바에서 지역 유형과 지역을 선택하세요.
-    """)
+    st.markdown("""사람인 사이트에서 원하는 지역의 채용 정보를 크롤링합니다.""")
 
     PREFIX, SUFFIX = load_json_data()
     global req_parameter
-    global req_parameter2
-    req_parameter, req_parameter2 = parse_data(PREFIX, SUFFIX)
+    global region_subregion_map
+    req_parameter, region_subregion_map = parse_data(PREFIX, SUFFIX)
+
+    if "all_jobs" not in st.session_state:
+        st.session_state.all_jobs = pd.DataFrame()
+    if "filtered_jobs" not in st.session_state:
+        st.session_state.filtered_jobs = pd.DataFrame()
 
     with st.sidebar:
-        st.header("검색 설정")
-        selected_region_type = st.selectbox("지역 유형 선택", list(req_parameter2.keys()), index=0)
-        region_type_code = req_parameter2[selected_region_type]
+        st.header("대분류 지역 선택")
+        selected_region = st.selectbox("대분류 지역", list(region_subregion_map.keys()))
 
-        selected_regions = None
-        region_code = ''
-        if selected_region_type == '지역별':
-            regions = sorted(req_parameter.keys())
-            selected_regions = st.multiselect("지역 선택", regions, default=['서울'] if '서울' in regions else [])
-            # region_code = [req_parameter.get(region, '') for region in selected_regions]
+        st.header("세부 지역 선택")
+        subregions = region_subregion_map[selected_region]
+        selected_subregions = st.multiselect("세부 지역", subregions)
 
-        search_button = st.button("채용 정보 가져오기", type="primary")
+        if st.button("공고 가져오기"):
+            with st.spinner("데이터를 가져오는 중..."):
+                st.session_state.all_jobs = crawl_jobs(10, selected_subregions)
+                st.session_state.filtered_jobs = st.session_state.all_jobs.copy()
+                st.success(f"{len(st.session_state.all_jobs)}개의 공고를 가져왔습니다!")
 
-    if search_button:
-        with st.spinner(f"{selected_regions or selected_region_type} 채용 정보를 가져오는 중..."):
-            df = crawl_jobs(region_type_code, 10, selected_regions)
+        if not st.session_state.all_jobs.empty:
+            st.header("필터")
+            unique_jobs = sorted(set(
+                job for job_list in st.session_state.all_jobs['직무'].dropna() if isinstance(job_list, list) for job in job_list
+            ))
+            selected_jobs = st.multiselect("직무 선택", unique_jobs)
 
-            # 데이터 전처리
-            df['원문'] = df['요구경력']
-            df[['요구경력_raw', '계약종류']] = df['원문'].apply(split_info)
-            # 적용
-            df['요구경력'] = df['요구경력_raw'].apply(normalize_experience)
-            df.drop(columns=['요구경력_raw'], inplace=True)
-            df['등록일자'] = df['등록일자'].apply(process_registration_date)
-            df.dropna(axis = 0, inplace=True)
+            filtered_df = st.session_state.all_jobs.copy()
+            if selected_jobs:
+                filtered_df = filtered_df[filtered_df['직무'].apply(lambda x: any(job in x for job in selected_jobs))]
 
-            if not df.empty:
-                st.success(f"총 {len(df)}개의 채용 정보를 찾았습니다!")
-                st.dataframe(df, use_container_width=True, hide_index=True, column_config={
-                    "링크": st.column_config.LinkColumn("링크", help="채용 공고 페이지"),
-                })
+            # ✅ 경력 필터 입력 UI
+            st.header("요구 경력 필터")
+            experience_input = st.text_input("경력을 입력하세요 (예: 신입 또는 숫자)", "")
 
-                csv = df.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    label="CSV로 다운로드",
-                    data=csv,
-                    file_name=f'saramin_jobs_{selected_regions or selected_region_type}.csv',
-                    mime='text/csv'
-                )
-            else:
-                st.warning("해당 지역의 채용 정보를 찾을 수 없습니다.")
+            if experience_input:
+                filtered_df = filter_by_experience(filtered_df, experience_input)
+
+            st.session_state.filtered_jobs = filtered_df
+
+    if not st.session_state.filtered_jobs.empty:
+        st.header("검색 결과")
+
+        if st.button("새로고침"):
+            st.session_state.all_jobs = pd.DataFrame()
+            st.session_state.filtered_jobs = pd.DataFrame()
+            st.experimental_rerun()
+
+        st.dataframe(st.session_state.filtered_jobs, use_container_width=True, hide_index=True)
+
+        csv = st.session_state.filtered_jobs.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="CSV로 다운로드",
+            data=csv,
+            file_name="filtered_jobs.csv",
+            mime="text/csv"
+        )
+    else:
+        st.warning("조건에 맞는 공고가 없습니다.")
 
 if __name__ == "__main__":
     main()
