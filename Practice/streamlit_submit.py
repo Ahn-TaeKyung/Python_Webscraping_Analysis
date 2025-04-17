@@ -24,25 +24,33 @@ def load_json_data():
 
 @st.cache_data
 def parse_data(PREFIX, SUFFIX):
-    req_parameter = {
-        district: PREFIX[region] + suffix[-3:]
-        for region, districts in SUFFIX.items()
-        for district, suffix in districts.items()
-    }
-    region_subregion_map = {
-        region: list(districts.keys())
-        for region, districts in SUFFIX.items()
-    }
+    req_parameter = {}
+    region_subregion_map = {}
+
+    for region, subregions in SUFFIX.items():
+        region_code_prefix = PREFIX.get(region)
+        if not region_code_prefix:
+            continue
+
+        region_subregion_map[region] = list(subregions.keys())
+        for subregion, suffix_code in subregions.items():
+            key = f"{region} {subregion}"
+            req_parameter[key] = region_code_prefix + suffix_code
+
     return req_parameter, region_subregion_map
 
-def parse_location_input(user_input):
+def parse_location_input(selected_region, selected_subregions):
     region_codes = []
-    for region in user_input:
-        code = req_parameter.get(region)
+
+    for district in selected_subregions:
+        key = f"{selected_region} {district}"
+        code = req_parameter.get(key)
+
         if code:
             region_codes.append(code)
         else:
-            st.warning(f"경고: '{region}' 지역을 찾을 수 없습니다.")
+            st.warning(f"⚠️ 지역 코드 없음: '{key}'")
+    
     return "%2C".join(region_codes)
 
 def split_info(text):
@@ -100,9 +108,9 @@ def extract_job_sectors(item):
     sectors = [tag.text.strip() for tag in sector_tags if "외" not in tag.text]
     return sectors
 
-def crawl_jobs(page_index, region_code):
+def crawl_jobs(page_index, selected_region, selected_subregions):
     results = []
-    loc_cd_param = parse_location_input(region_code)
+    loc_cd_param = parse_location_input(selected_region, selected_subregions)
     for page in range(1, page_index + 1):
         url = (
             f"https://www.saramin.co.kr/zf_user/jobs/list/domestic"
@@ -211,7 +219,7 @@ def main():
 
         if st.button("공고 가져오기"):
             with st.spinner("데이터를 가져오는 중..."):
-                st.session_state.all_jobs = crawl_jobs(10, selected_subregions)
+                st.session_state.all_jobs = crawl_jobs(10, selected_region, selected_subregions)
                 st.session_state.filtered_jobs = st.session_state.all_jobs.copy()
                 st.success(f"{len(st.session_state.all_jobs)}개의 공고를 가져왔습니다!")
 
