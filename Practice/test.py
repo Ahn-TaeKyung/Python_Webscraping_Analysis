@@ -18,7 +18,8 @@ from wordcloud import WordCloud
 font_path = 'C:\\windows\\Fonts\\malgun.ttf'
 font_prop = fm.FontProperties(fname=font_path).get_name()
 matplotlib.rc('font', family=font_prop)
-
+PREFIX = {}
+SUFFIX = {}
 st.set_page_config(
     page_title="사람인 채용 정보 크롤러",
     page_icon="🔍",
@@ -110,11 +111,12 @@ def parse_data(PREFIX, SUFFIX):
 
 def parse_location_input(selected_region, selected_subregions):
     region_codes = []
-    print(selected_subregions)
-    if selected_subregions == ['전체']:
-        print(selected_region)
-        selected_region = selected_region[0]
-        print(selected_region)
+    # print(selected_subregions)
+    # if selected_subregions == ['전체']:
+    #     print(selected_region)
+    #     selected_region = selected_region[0]
+    #     print(selected_region)
+
     
     for district in selected_subregions:
         key = f"{selected_region} {district}"
@@ -451,13 +453,14 @@ def main_tab():
 
     with st.sidebar:
         st.header("대분류 지역 선택")
-        selected_region = st.multiselect("대분류 지역", list(region_subregion_map.keys()))
+        selected_region = st.selectbox("대분류 지역", list(region_subregion_map.keys()))
 
         st.header("세부 지역 선택 (필수)")
-        subregions = set()
-        for sub_region in selected_region:
-            for temp in region_subregion_map[sub_region]:
-                subregions.add(temp) 
+        subregions = region_subregion_map[selected_region]
+        # subregions = set()
+        # for sub_region in selected_region:
+        #     for temp in region_subregion_map[sub_region]:
+        #         subregions.add(temp) 
         selected_subregions = st.multiselect("세부 지역", subregions)
 
         if st.button("공고 가져오기"):
@@ -508,12 +511,12 @@ def main_tab():
                 else:
                     st.success(f"{len(filtered_df)}개의 공고가 필터링되었습니다.")
 
-            st.header("최소 학력 필터")
+            st.header("학력 필터")
             if '최소학력' not in filtered_df.columns:
-                st.warning("🚫 '최소학력' 데이터가 없습니다. 필터를 사용할 수 없습니다.")
+                st.warning("🚫 '학력' 데이터가 없습니다. 필터를 사용할 수 없습니다.")
             else:
                 unique_educations = filtered_df['최소학력'].dropna().unique()
-                selected_educations = st.multiselect("최소 학력을 선택하세요", ["전체"] + list(unique_educations))
+                selected_educations = st.multiselect("학력을 선택하세요", ["전체"] + list(unique_educations))
                 filtered_df = filter_by_education(filtered_df, selected_educations)
 
             st.session_state.filtered_jobs = filtered_df
@@ -536,7 +539,7 @@ def main_tab():
 
                 with col1:
                     st.markdown(f"### **[{row['제목']}]({row['링크']})**")
-                    st.markdown(f"- **회사**: {row['회사']}")
+                    st.markdown(f"- **회사**: [{row['회사']}]({row['회사링크']})")
                     st.markdown(f"- **직무**: {', '.join(row['직무'])}")  # 직무 수정된 부분
                     st.markdown(f"- **지역**: {row['지역']}")
                     st.markdown(f"- **경력**: {row['요구경력']}")
@@ -643,7 +646,7 @@ def visual_chart_exp():
     plt.figure(figsize=(10, 6))
     plt.figure(figsize=(10, 6))
     
-    # '개발' 키워드가 포함된 공고만 필터링
+#     # '개발' 키워드가 포함된 공고만 필터링
     dev_df = st.session_state.all_jobs[st.session_state.all_jobs['제목'].str.contains('개발', na=False)]
     
     # 카운트 플롯
@@ -686,37 +689,6 @@ def visual_piechart():
 
     st.plotly_chart(fig, use_container_width=True)
 
-def visual_piechart_dev():
-    dev_df = st.session_state.all_jobs[st.session_state.all_jobs['제목'].str.contains('개발', na=False)]
-    contract_counts = dev_df['계약종류'].value_counts()
-
-    fig = px.pie(
-        names=contract_counts.index,
-        values=contract_counts.values,
-        title='계약 종류별 공고 수 분포(개발자)',
-        hole=0.3
-    )
-
-    fig.update_traces(
-        textinfo='percent+label',
-        textposition='outside',        # 바깥에 라벨 표시
-        rotation=120,                  # 시작 각도 설정
-        pull=[0.05] * len(contract_counts),  # 항목 살짝 분리
-    )
-
-    fig.update_layout(
-        showlegend=True,
-        title=dict(font=dict(size=20), x=0),
-        uniformtext_minsize=10,        # 너무 작은 텍스트는 생략
-        uniformtext_mode='hide',
-        height=600,                    # 차트 크기 키우기
-        width=800,
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-
 
 def visual_tab():
     # 📊 분석 탭 내용
@@ -728,7 +700,6 @@ def visual_tab():
     visual_chart_count()
     visual_chart_exp()
     visual_piechart()
-    visual_piechart_dev()
     visual_word_cloud()
 
     visualize_job_distribution()
